@@ -1,0 +1,176 @@
+services:
+  postgresql:
+    image: postgres:17
+    container_name: postgresql
+    restart: always
+    env_file:
+      - .env
+    ports:
+      - 127.0.0.1:5432:5432
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U postgres -d postgres]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./pgsql-init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  db-init:
+    image: postgres:17
+    container_name: postgresql_init
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    env_file:
+      - .env
+    command:
+      - sh
+      - -c
+      - |
+        until pg_isready -h postgresql -U postgres; do sleep 1; done;
+        export PGPASSWORD=F2Wgk8qLrT7mXvYpQ9nCz3d;
+        for db in evolution n8n chatwoot; do
+          psql -h postgresql -U postgres -tAc SELECT 1 FROM pg_database WHERE datname=$$db | grep -q 1 || createdb -h postgresql -U postgres 347221db;
+        done
+    restart: no
+
+  redis:
+    image: redis:latest
+    container_name: redis
+    env_file:
+      - .env
+    command: [ sh, -c, redis-server --requirepass redacted ]
+    restart: always
+    volumes:
+      - redis_data:/data
+    environment:
+      - TZ=America/Sao_Paulo
+    ports:
+      - 127.0.0.1:6379:6379
+
+  evolution:
+    container_name: evolution
+    image: evoapicloud/evolution-api:v2.3.7
+    restart: always
+    environment:
+      - SERVER_TYPE=http
+      - SERVER_URL=https://evolution.broscotech.com.br
+      - SERVER_PORT=8080
+      - LOG_LEVEL=ERROR,WARN,DEBUG,INFO,LOG,VERBOSE,DARK,WEBHOOKS,WEBSOCKET
+      - LOG_COLOR=true
+      - DATABASE_PROVIDER=postgresql
+      - DATABASE_CONNECTION_URI=[REDACTED:connection_string]postgresql:5432/evolution?schema=public
+      - DATABASE_URL=[REDACTED:connection_string]postgresql:5432/evolution?schema=public
+      - PRISMA_DATABASE_URL=[REDACTED:connection_string]postgresql:5432/evolution?schema=public
+      - CACHE_REDIS_ENABLED=true
+      - CACHE_REDIS_URI=redis://:redacted@redis:6379/1
+      - CACHE_REDIS_PREFIX_KEY=evolution
+      - CACHE_REDIS_SAVE_INSTANCES=false
+      - S3_ENABLED=false
+      - AUTHENTICATION_API_KEY=evo_fbpzwxq9n7squlurxxwpioob
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    ports:
+      - 127.0.0.1:9002:8080
+    volumes:
+      - ./volumes/evolution_sessions:/evolution/sessions
+      - ./volumes/evolution_instances:/evolution/instances
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: n8n
+    restart: always
+    env_file:
+      - .env
+    ports:
+      - 127.0.0.1:5678:5678
+    environment:
+      - TZ=America/Sao_Paulo
+      - GENERIC_TIMEZONE=America/Sao_Paulo
+      - N8N_TRUST_PROXY=true
+      - N8N_PROTOCOL=https
+      - N8N_HOST=n8n.broscotech.com.br
+      - N8N_PORT=5678
+      - N8N_EDITOR_BASE_URL=https://n8n.broscotech.com.br/
+      - WEBHOOK_URL=https://n8n.broscotech.com.br/
+      - N8N_WEBHOOK_URL=https://n8n.broscotech.com.br/
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_DATABASE=n8n
+      - DB_POSTGRESDB_HOST=postgresql
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_USER=postgres
+      - DB_POSTGRESDB_PASSWORD=F2Wgk8qLrT7mXvYpQ9nCz3d
+      - DB_POSTGRESDB_SCHEMA=public
+      - N8N_ENCRYPTION_KEY=yEDMX4JopdOCaaXX1kp2aD1UvH7sjZ5y
+      - N8N_EMAIL_MODE=smtp
+      - N8N_SMTP_HOST=smtp-relay.brevo.com
+      - N8N_SMTP_PORT=587
+      - N8N_SMTP_USER=7f72d6001@smtp-brevo.com
+      - N8N_SMTP_PASS=${RELAY_PASSWORD}
+      - N8N_SMTP_SENDER=notificacoes@broscotech.com.br
+      - N8N_SMTP_SSL=false
+    volumes:
+      - n8n_data:/home/node/.n8n
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    extra_hosts:
+      - host.docker.internal:host-gateway
+
+  snappymail:
+    image: djmaze/snappymail:latest
+    container_name: snappymail
+    restart: always
+    environment:
+      - TZ=America/Sao_Paulo
+    ports:
+      - 127.0.0.1:8888:8888
+    volumes:
+      - snappymail_data:/var/lib/snappymail
+
+  mailserver:
+    image: ghcr.io/docker-mailserver/docker-mailserver:latest
+    container_name: mailserver
+    hostname: mail.broscotech.com.br
+    restart: always
+    environment:
+      - OVERRIDE_HOSTNAME=mail.broscotech.com.br
+      - LOG_LEVEL=info
+      - ENABLE_CLAMAV=0
+      - ENABLE_SPAMASSASSIN=0
+      - ENABLE_FAIL2BAN=1
+      - ENABLE_POSTGREY=0
+      - SSL_TYPE=letsencrypt
+      - SSL_DOMAIN=mail.broscotech.com.br
+      - RELAY_HOST=smtp-relay.brevo.com
+      - RELAY_PORT=587
+      - RELAY_USER=7f72d6001@smtp-brevo.com
+      - RELAY_PASSWORD=${RELAY_PASSWORD}
+      - PERMIT_DOCKER=network
+      - ONE_DIR=1
+      - DMS_VML=0
+    ports:
+      - 25:25
+      - 143:143
+      - 465:465
+      - 587:587
+      - 993:993
+    volumes:
+      - ./volumes/mailserver/mail-data:/var/mail
+      - ./volumes/mailserver/mail-state:/var/mail-state
+      - ./volumes/mailserver/mail-logs:/var/log/mail
+      - ./volumes/mailserver/config:/tmp/docker-mailserver
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    cap_add:
+      - NET_ADMIN
+
+volumes:
+  postgres_data:
+  redis_data:
+  n8n_data:
+  snappymail_data:

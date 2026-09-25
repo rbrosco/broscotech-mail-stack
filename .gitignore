@@ -1,0 +1,7 @@
+.env
+volumes/
+*.log
+__pycache__/
+*.pyc
+*.sock
+*.pid
